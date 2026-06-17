@@ -1,0 +1,147 @@
+# Xero API Scenario Questions
+
+## C1. How would you prove that our Xero API connection is working before checking invoices?
+
+Before checking invoices, I would verify the OAuth connection and tenant access first.
+
+Steps:
+
+1. Confirm that we have a valid OAuth access token.
+2. Call the Xero connections endpoint:
+
+```http
+GET https://api.xero.com/connections
+Authorization: Bearer <access_token>
+```
+
+3. Check that the response returns at least one connected tenant, including fields such as:
+   - `tenantId`
+   - `tenantName`
+   - `tenantType`
+
+4. Store or select the correct `tenantId`, because Accounting API calls require the tenant ID in the `xero-tenant-id` header.
+5. Optionally make a lightweight Accounting API call such as retrieving organisation information to confirm the selected tenant can be accessed.
+
+If `/connections` returns the expected tenant, it proves that the OAuth connection is working and that the user has authorised access to at least one Xero organisation.
+
+---
+
+## C2. If `/connections` works but `GET /Invoices` fails, what would you check?
+
+If `/connections` works but `GET /Invoices` fails, I would check the following areas:
+
+1. **Tenant header**
+   - Confirm that the request includes the correct `xero-tenant-id` header.
+   - Ensure the tenant ID comes from the `/connections` response.
+
+2. **OAuth scopes**
+   - Check whether the app has the required accounting invoice permissions, such as `accounting.transactions` or `accounting.transactions.read`.
+   - `/connections` may work even if the token does not have enough permission to read invoices.
+
+3. **Access token validity**
+   - Confirm the access token has not expired.
+   - Refresh the token if needed.
+
+4. **Correct endpoint and method**
+   - Confirm the endpoint is:
+
+```http
+GET https://api.xero.com/api.xro/2.0/Invoices
+```
+
+5. **User and organisation permissions**
+   - Check whether the authorised Xero user has permission to view invoices in that organisation.
+
+6. **Request parameters**
+   - Check whether filters such as `where`, `Statuses`, `InvoiceNumbers`, `page`, or date headers are valid.
+   - Invalid filters can cause request errors.
+
+7. **Rate limits**
+   - Check whether the API returned `429 Too Many Requests`.
+   - Inspect rate limit headers such as `Retry-After` and Xero limit headers.
+
+8. **Tenant connection status**
+   - Confirm that the tenant has not been disconnected or re-authorisation is not required.
+
+---
+
+## C3. What endpoint would you call to check invoices?
+
+I would call the Accounting API invoices endpoint:
+
+```http
+GET https://api.xero.com/api.xro/2.0/Invoices
+Authorization: Bearer <access_token>
+xero-tenant-id: <tenant_id>
+Accept: application/json
+```
+
+This endpoint retrieves one or many invoices. For large datasets, I would use pagination and filtering, for example:
+
+```http
+GET https://api.xero.com/api.xro/2.0/Invoices?page=1&pageSize=100
+```
+
+I would also consider filters such as `If-Modified-Since`, `Statuses`, `InvoiceNumbers`, or `SearchTerm` depending on the business requirement.
+
+---
+
+## C4. How would you check one specific invoice?
+
+If I know the Xero-generated invoice ID, I would call:
+
+```http
+GET https://api.xero.com/api.xro/2.0/Invoices/{InvoiceID}
+Authorization: Bearer <access_token>
+xero-tenant-id: <tenant_id>
+Accept: application/json
+```
+
+Example:
+
+```http
+GET https://api.xero.com/api.xro/2.0/Invoices/297c2dc5-cc47-4afd-8ec8-74990b8761e9
+```
+
+If I only know the invoice number, I would either:
+
+1. Use the invoice number as an identifier if supported by the endpoint, or
+2. Query invoices using a filter such as `InvoiceNumbers` or `SearchTerm`.
+
+Retrieving a single invoice is useful because Xero returns more detailed invoice information, including line item details, compared with retrieving many invoices at once.
+
+---
+
+## C5. If the invoice API returns `429`, how should the backend handle it?
+
+HTTP `429` means the backend has hit a Xero API rate limit. The backend should not retry immediately.
+
+Recommended handling:
+
+1. **Read the response headers**
+   - Check `Retry-After` to know how many seconds to wait before retrying.
+   - Check `X-Rate-Limit-Problem` to understand which limit was exceeded.
+
+2. **Pause requests for the affected tenant**
+   - Since Xero rate limits are applied per tenant, the backend should pause requests for that tenant until the retry window has passed.
+
+3. **Retry safely**
+   - Use exponential backoff with jitter.
+   - Avoid tight retry loops.
+   - Limit maximum retry attempts.
+
+4. **Queue requests**
+   - Put invoice sync jobs into a queue instead of failing them permanently.
+   - Resume processing after the rate limit window resets.
+
+5. **Reduce future API calls**
+   - Use pagination properly.
+   - Use filters such as `If-Modified-Since` for incremental sync.
+   - Cache previously retrieved data where appropriate.
+   - Avoid repeatedly fetching all invoices.
+
+6. **Log and monitor**
+   - Log the tenant ID, endpoint, retry time, and rate limit problem.
+   - Alert the team if rate limits happen frequently.
+
+In short, the backend should respect the `Retry-After` header, pause or queue requests, retry later, and optimise the sync logic to reduce unnecessary API calls.
